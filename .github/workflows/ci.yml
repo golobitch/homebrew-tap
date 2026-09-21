@@ -16,45 +16,36 @@ jobs:
   audit:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      # Checks this repository out as a tap, in the place Homebrew expects to find one, and sets
+      # up the gems `brew style` needs. On `main`: the repository renamed its default branch, so
+      # the `@master` that most documentation still shows no longer resolves.
+      - name: Set up Homebrew
+        id: homebrew
+        uses: Homebrew/actions/setup-homebrew@main
 
-      - name: Is there anything here yet?
-        id: contents
+      - name: Style, audit and install what is here
+        working-directory: ${{ steps.homebrew.outputs.repository-path }}
+        env:
+          TAP: ${{ steps.homebrew.outputs.tap-name }}
         run: |
-          count=$(find Formula Casks -name '*.rb' 2>/dev/null | wc -l | tr -d ' ')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          if [ "$count" -eq 0 ]; then
-            echo "::notice::No formulae or casks yet — the first release writes them."
+          shopt -s nullglob
+          files=(Formula/*.rb Casks/*.rb)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::notice::Nothing here yet — the first release writes the formula and the cask."
+            exit 0
           fi
+          printf 'checking: %s\n' "${files[@]}"
 
-      - uses: Homebrew/actions/setup-homebrew@master
-        if: steps.contents.outputs.count != '0'
+          brew style "$TAP"
 
-      - name: Make this checkout the tap
-        if: steps.contents.outputs.count != '0'
-        run: |
-          # Homebrew can only reason about a tap that lives where it expects one.
-          taps="$(brew --repository)/Library/Taps/golobitch"
-          mkdir -p "$taps"
-          ln -s "$GITHUB_WORKSPACE" "$taps/homebrew-tap"
-          brew tap-info golobitch/tap
+          # --online fetches the release assets and checks the checksums against them, which is the
+          # whole point: a rendered template with a stale sha256 installs nothing.
+          brew audit --strict --online --tap="$TAP"
 
-      - name: Style
-        if: steps.contents.outputs.count != '0'
-        run: brew style golobitch/tap
-
-      # --online fetches the release assets and checks the checksums against them, which is the
-      # whole point: a rendered template with a stale sha256 installs nothing.
-      - name: Audit
-        if: steps.contents.outputs.count != '0'
-        run: brew audit --strict --online --tap=golobitch/tap
-
-      # Proof rather than inference: the formula is installed and the binary is run. The cask is
-      # not installed — it would mean putting a notarized app on a runner to learn nothing the
-      # audit did not already say.
-      - name: Install tb-tui and run it
-        if: hashFiles('Formula/tb-tui.rb') != ''
-        run: |
-          brew install golobitch/tap/tb-tui
-          tb-tui --help
-          brew uninstall golobitch/tap/tb-tui
+          # Proof rather than inference: "the audit passed" and "it installs" are different claims.
+          # The cask is not installed — putting a notarized app on a runner would tell us nothing
+          # the audit did not.
+          if [ -f Formula/tb-tui.rb ]; then
+            brew install "$TAP/tb-tui"
+            tb-tui --help
+          fi
