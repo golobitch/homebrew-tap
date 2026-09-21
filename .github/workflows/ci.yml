@@ -1,0 +1,60 @@
+name: ci
+
+# The formula and the cask here are written by bump-tap.yml in golobitch/tb-explorer, from
+# templates. That means a mistake in a template arrives as a commit in this repository, and without
+# this workflow the first person to notice would be whoever runs `brew install` next.
+#
+# Runs on macOS because a cask can only be audited there.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is there anything here yet?
+        id: contents
+        run: |
+          count=$(find Formula Casks -name '*.rb' 2>/dev/null | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -eq 0 ]; then
+            echo "::notice::No formulae or casks yet — the first release writes them."
+          fi
+
+      - uses: Homebrew/actions/setup-homebrew@master
+        if: steps.contents.outputs.count != '0'
+
+      - name: Make this checkout the tap
+        if: steps.contents.outputs.count != '0'
+        run: |
+          # Homebrew can only reason about a tap that lives where it expects one.
+          taps="$(brew --repository)/Library/Taps/golobitch"
+          mkdir -p "$taps"
+          ln -s "$GITHUB_WORKSPACE" "$taps/homebrew-tap"
+          brew tap-info golobitch/tap
+
+      - name: Style
+        if: steps.contents.outputs.count != '0'
+        run: brew style golobitch/tap
+
+      # --online fetches the release assets and checks the checksums against them, which is the
+      # whole point: a rendered template with a stale sha256 installs nothing.
+      - name: Audit
+        if: steps.contents.outputs.count != '0'
+        run: brew audit --strict --online --tap=golobitch/tap
+
+      # Proof rather than inference: the formula is installed and the binary is run. The cask is
+      # not installed — it would mean putting a notarized app on a runner to learn nothing the
+      # audit did not already say.
+      - name: Install tb-tui and run it
+        if: hashFiles('Formula/tb-tui.rb') != ''
+        run: |
+          brew install golobitch/tap/tb-tui
+          tb-tui --help
+          brew uninstall golobitch/tap/tb-tui
